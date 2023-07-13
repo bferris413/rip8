@@ -16,7 +16,7 @@ pub struct Chip8 {
     dt: u8,
     st: u8,
     sp: u8,
-    display: [[u8; 32]; 64]
+    display: [[u8; 64]; 32]
 }
 impl Chip8 {
     /// Returns a new Chip8 interpreter.
@@ -30,18 +30,28 @@ impl Chip8 {
             pc: 0x200,
             sp: 0,
             stack: [0; 16],
-            display: [[0; 32]; 64],
+            display: [[0; 64]; 32],
         }
     }
 
     /// Runs the provided ROM.
     pub fn run(&mut self, rom: Rom) {
         self.load(&rom.code);
+        self.run_loop();
+    }
+
+    /// Continues processing after a halt from wherever the PC currently is.
+    pub fn resume(&mut self) {
+        self.run_loop();
+    }
+
+    // Runs the CPU until reaching EOM or a halt.
+    fn run_loop(&mut self) {
         while let Some(instr) = self.fetch() {
             match &*instr {
                 // clear display
                 &[0x00, 0xE0] => {
-                    self.display.fill([0; 32]);
+                    self.display.fill([0; 64]);
                 }
 
                 // (custom OP) halt execution and rewind PC as if this instruction never executed
@@ -84,6 +94,37 @@ impl Chip8 {
                     self.index = val;
                 }
 
+                // Draw n bytes starting at Vx,Vy
+                &[a, b] if a & 0xF0 == 0xD0 => {
+                    let regx = (a & 0x0F) as usize;
+                    let regy = (b & 0xF0) as usize;
+                    let displx = self.registers[regx] as usize % 64; // starting point should wrap
+                    let mut disply = self.registers[regy] as usize % 32; // starting point should wrap
+                    let n = b & 0x0F;
+                    let sprite_range = self.index as usize..(self.index + n as u16) as usize;
+
+                    self.registers[0x0F] = 0;
+
+                    // iterate over the sprite bytes, mapping each bit to the "pixel"
+                    let end_byte = displx + 8;
+                    for sprite_row in &self.memory[sprite_range] {
+                        let mut drawx = displx;
+                        while drawx < end_byte {
+                            // if (!(drawx < 64 && disply < 32)) {
+                            //     continue;
+                            // }
+
+                            let bitval = (sprite_row >> (end_byte - drawx - 1)) & 0x01;
+                            if self.display[disply][drawx] & bitval == 0x01  {
+                                self.registers[0x0F] = 0x01;
+                            }
+                            self.display[disply][drawx] ^= bitval;
+                            drawx += 1;
+                        }
+                        disply += 1;
+                    }
+                }
+
                 // NOOP
                 &[0x00, 0x00] => {}
 
@@ -109,6 +150,22 @@ impl Chip8 {
         } else {
             None
         }
+    }
+
+    /// Prints the Chip8's display.
+    pub fn print_display(&self) {
+        let mut s = String::new();
+        for arr in self.display {
+            for byte in arr {
+                if byte == 0x01 {
+                    s.push_str("\u{2587} ");
+                } else {
+                    s.push_str("_ ");
+                }
+            }
+            s.push('\n');
+        }
+        println!("\n{s}");
     }
 }
 
@@ -224,9 +281,9 @@ mod tests {
     fn chip8_clears_display() {
         let rom = Rom::with_code(Vec::from([0x00, 0xE0])).unwrap();
         let mut chip8 = Chip8::new();
-        chip8.display.fill([255; 32]);
+        chip8.display.fill([255; 64]);
         chip8.run(rom);
-        assert_eq!(chip8.display, [[0; 32]; 64]);
+        assert_eq!(chip8.display, [[0; 64]; 32]);
     }
 
     #[test]
@@ -289,6 +346,20 @@ mod tests {
         let mut chip8 = Chip8::new();
         chip8.run(rom);
         assert_eq!(chip8.index, 0x123);
+    }
+
+    #[test]
+    fn chip8_draws_sprite() {
+        let rom = Rom::with_code(Vec::from([
+            0xA2, 0x06, // set index register to 0x206
+            0xD0, 0x08, // draw 5-byte sprite to VxVy (0, 0)
+            0x00, 0xA1, // halt
+            0xF0, 0x80, 0xF0, 0x10, 0xF0, // the sprite "5"
+        ])).unwrap();
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        // assert_eq!(&chip8.display[..8], &[[0x01; 8]; 8]);
+        chip8.print_display();
     }
 
 }
