@@ -347,7 +347,8 @@ impl Chip8 {
                 // Store V0 through Vx starting at memory[I], Fx55
                 &[a, 0x55] if a & 0xF0 == 0xF0 => {
                     let nregs = (a & 0x0F) as usize;
-                    let memslice = &mut self.memory[self.index as usize..=nregs];
+                    let i = self.index as usize;
+                    let memslice = &mut self.memory[i..=(i + nregs)];
                     let regslice = &self.registers[..=nregs];
                     memslice.copy_from_slice(regslice);
                 }
@@ -356,7 +357,8 @@ impl Chip8 {
                 &[a, 0x65] if a & 0xF0 == 0xF0 => {
                     let nregs = (a & 0x0F) as usize;
                     let regslice = &mut self.registers[..=nregs];
-                    let memslice = &self.memory[self.index as usize..=nregs];
+                    let index = self.index as usize;
+                    let memslice = &self.memory[index..=(index + nregs)];
                     regslice.copy_from_slice(memslice);
                 }
 
@@ -958,5 +960,133 @@ mod tests {
         assert_eq!(chip8.pc, 0x20A);
         assert_eq!(chip8.registers[0x0D], 0x00);
         assert_eq!(chip8.registers[0x02], 0x00);
+    }
+
+    // Vx = RND & nn, Cxnn
+    #[test]
+    fn chip8_sets_vx_rand_nn() {
+        let rom = Rom::with_code(Vec::from([
+            0xC2, 0xFF, // set V2 to RDN & 0xFF
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert!(chip8.registers[0x02] != 0x00);
+        assert!(chip8.registers[0x02] != 0xFF);
+    }
+
+    // Vx = dt, Fx07, Fx15
+    #[test]
+    fn chip8_sets_vx_dt() {
+        let rom = Rom::with_code(Vec::from([
+            0x6A, 0xF1, // set VA to 0xF1
+            0xFA, 0x15, // set dt to VA
+            0xFB, 0x07, // set VB to dt
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.registers[0x0A], 0xF1);
+        assert_eq!(chip8.registers[0x0B], 0xF1);
+        assert_eq!(chip8.dt, 0xF1);
+    }
+
+    // st = Vx, Fx18
+    #[test]
+    fn chip8_sets_st() {
+        let rom = Rom::with_code(Vec::from([
+            0x67, 0xAA, // set V7 to 0xAA
+            0xF7, 0x18, // set st to V7
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.registers[0x07], 0xAA);
+        assert_eq!(chip8.st, 0xAA);
+    }
+
+    // I = I + Vx, Fx1E
+    #[test]
+    fn chip8_sets_i_plus_vx() {
+        let rom = Rom::with_code(Vec::from([
+            0x67, 0x02, // set V7 to 0x02
+            0xF7, 0x1E, // add and store
+            0x00, 0xA1, // halt, I should be 0x02
+            0xF7, 0x1E, // add and store
+            0x00, 0xA1, // halt, I should be 0x04
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.registers[0x07], 0x02);
+        assert_eq!(chip8.index, 0x02);
+
+        chip8.resume();
+        assert_eq!(chip8.index, 0x04);
+    }
+
+    // Store BCD in I, I+1, I+2, Fx33
+    #[test]
+    fn chip8_stores_bcd() {
+        let rom = Rom::with_code(Vec::from([
+            0xAB, 0x00, // set I to 0xB00
+            0x6A, 0xFE, // set VA to 0xFE (254)
+            0xFA, 0x33, // do the thing
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.memory[0xB00], 2);
+        assert_eq!(chip8.memory[0xB01], 5);
+        assert_eq!(chip8.memory[0xB02], 4);
+    }
+
+    // Copy V0 to Vx into memory I, Fx55
+    #[test]
+    fn chip8_stores_registers_in_memory() {
+        let rom = Rom::with_code(Vec::from([
+            0x60, 0x00, // set V0..VE to 0..=0x0E using only load
+            0x61, 0x01,
+            0x62, 0x02,
+            0x63, 0x03,
+            0x64, 0x04,
+            0x65, 0x05,
+            0x66, 0x06,
+            0x67, 0x07,
+            0x68, 0x08,
+            0x69, 0x09,
+            0x6A, 0x0A,
+            0x6B, 0x0B,
+            0x6C, 0x0C,
+            0x6D, 0x0D,
+            0x6E, 0x0E,
+            0xA5, 0x00, // set I to 0x500
+            0xFE, 0x55, // copy registers to memory
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(&chip8.memory[0x500..=0x50E], &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]);
+    }
+
+    // Copy memory I into V0..=VX, Fx65
+    #[test]
+    fn chip8_reads_registers_from_memory() {
+        let rom = Rom::with_code(Vec::from([
+            0xAA, 0x00, // set I to 0xA00
+            0xFE, 0x65, // copy registers to memory
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        let slice = &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E];
+        chip8.memory[0x0A00..=0xA0E].copy_from_slice(slice);
+        chip8.run(rom);
+        assert_eq!(&chip8.registers[..=0x0E], slice);
     }
 }
