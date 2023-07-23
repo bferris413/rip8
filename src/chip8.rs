@@ -5,6 +5,26 @@ const MEM_BYTES: usize = 4096;
 // Maximum allowed bytes of a user's ROM.
 const MAX_ROM_BYTES: usize = MEM_BYTES - 0x200;
 
+// Font, https://tobiasvl.github.io/blog/write-a-chip-8-emulator
+const FONT: [u8; 80] = [
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+];
+
 /// A Chip8 interpreter.
 #[derive(Debug)]
 pub struct Chip8 {
@@ -21,8 +41,11 @@ pub struct Chip8 {
 impl Chip8 {
     /// Returns a new Chip8 interpreter.
     pub fn new() -> Self {
+        let mut memory = [0; 4096];
+        memory[0..FONT.len()].copy_from_slice(&FONT);
+
         Chip8 {
-            memory: [0; 4096],
+            memory,
             registers: [0; 16],
             index: 0,
             dt: 0,
@@ -322,9 +345,11 @@ impl Chip8 {
 
                 // I = location of hex sprite for value Vx, Fx29
                 &[a, 0x29] if a & 0xF0 == 0xF0 => {
-                    let _regx = (a & 0x0F) as usize;
-                    unimplemented!();
-                    // self.index = self.registers[regx] as u16;
+                    let regx = (a & 0x0F) as usize;
+                    let val = self.registers[regx];
+                    // each font is 5 bytes and stored at the offset 5 * digit
+                    // e.g, '0' is at 0x00, '3' is at 0x0F (15), etc.
+                    self.index = 5 * val as u16; 
                 }
 
                 // mem[I] = hundreds, I+1 = tens, I+2 = ones of Vx, Fx33
@@ -488,7 +513,6 @@ mod tests {
         let rom = Rom::with_code(vec![255; MAX_ROM_BYTES]).unwrap();
         let mut chip8 = Chip8::new();
         chip8.load(&rom);
-        assert_eq!(&chip8.memory[0..0x200], &[0; 0x200]);
         assert_eq!(&chip8.memory[0x200..MEM_BYTES], &[255; MAX_ROM_BYTES]);
     }
 
@@ -497,7 +521,6 @@ mod tests {
         let rom = Rom::with_code(vec![255; 100]).unwrap();
         let mut chip8 = Chip8::new();
         chip8.load(&rom);
-        assert_eq!(&chip8.memory[0..0x200], &[0; 0x200]);
         assert_eq!(&chip8.memory[0x200..0x200+100], &[255; 100]);
         assert_eq!(&chip8.memory[0x200+100..], &[0; MAX_ROM_BYTES - 100]);
     }
@@ -1088,5 +1111,37 @@ mod tests {
         chip8.memory[0x0A00..=0xA0E].copy_from_slice(slice);
         chip8.run(rom);
         assert_eq!(&chip8.registers[..=0x0E], slice);
+    }
+
+    // I = location of hex sprite for value Vx, Fx29
+    #[test]
+    fn chip8_sets_index_to_font_location() {
+        let rom = Rom::with_code(Vec::from([
+            0x61, 0x00, // set V1 to 0x00 (digit '0')
+            0xF1, 0x29, // set I wherever '0' is stored
+            0x00, 0xA1, // halt
+        ])).unwrap();
+
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.index, 0x00);
+
+        let rom = Rom::with_code(Vec::from([
+            0x69, 0x08, // set V9 to 0x08 (digit '8')
+            0xF9, 0x29, // set I wherever '8' is stored
+            0x00, 0xA1, // halt
+        ])).unwrap();
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.index, 0x28);
+
+        let rom = Rom::with_code(Vec::from([
+            0x6A, 0x0F, // set VA to 0x0F (digit 'F')
+            0xFA, 0x29, // set I wherever 'F' is stored
+            0x00, 0xA1, // halt
+        ])).unwrap();
+        let mut chip8 = Chip8::new();
+        chip8.run(rom);
+        assert_eq!(chip8.index, 0x4B);
     }
 }
