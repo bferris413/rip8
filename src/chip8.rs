@@ -1,9 +1,12 @@
 use std::ops::Deref;
+use std::time::Instant;
 
 // Number of bytes in the Chip8's memory.
 const MEM_BYTES: usize = 4096;
 // Maximum allowed bytes of a user's ROM.
 const MAX_ROM_BYTES: usize = MEM_BYTES - 0x200;
+// Delay and sound timer tick rate, in milliseconds.
+const TIMER_TICK_MILLIS: u128 = 16;
 
 // Font, https://tobiasvl.github.io/blog/write-a-chip-8-emulator
 const FONT: [u8; 80] = [
@@ -70,11 +73,14 @@ impl Chip8 {
 
     // Runs the CPU until reaching EOM or a halt.
     fn run_loop(&mut self) {
+        let mut timer_elapsed = 0;
         while let Some(instr) = self.fetch() {
             #[cfg(test)]
             if let [a, b] = &*instr {
                 println!("instr: 0x{:02x}{:02x}", a, b);
             }
+
+            let start = Instant::now();
             match &*instr {
                 // clear display
                 &[0x00, 0xE0] => {
@@ -392,6 +398,15 @@ impl Chip8 {
 
                 &[a, b] => unimplemented!("{a:#04X} {b:#04X}"),
                 _ => panic!(),
+            }
+
+            timer_elapsed += start.elapsed().as_millis();
+
+            // decrement delay and sound timers if it's been TIMER_TICK_MILLIS since our last decrement
+            if timer_elapsed > TIMER_TICK_MILLIS {
+                timer_elapsed = 0;
+                self.dt = self.dt.saturating_sub(1);
+                self.st = self.st.saturating_sub(1);
             }
         }
     }
@@ -1241,7 +1256,7 @@ mod tests {
             0xD2, 0x35, 
 
             0x61, 0x0F, 
-            0x62, 0x0A, 
+            0x62, 0x05, 
             0x63, 0x06, 
             0xF1, 0x29, 
             0xD2, 0x35, 
