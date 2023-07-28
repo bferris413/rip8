@@ -5,8 +5,8 @@ use std::time::Instant;
 const MEM_BYTES: usize = 4096;
 // Maximum allowed bytes of a user's ROM.
 const MAX_ROM_BYTES: usize = MEM_BYTES - 0x200;
-// Delay and sound timer tick rate, in milliseconds.
-const TIMER_TICK_MILLIS: u128 = 16;
+// Delay and sound timer tick rate, in microseconds. Should tick ~60 times/sec
+const TIMER_TICK_MICROS: u128 = 16700;
 
 // Font, https://tobiasvl.github.io/blog/write-a-chip-8-emulator
 const FONT: [u8; 80] = [
@@ -400,10 +400,10 @@ impl Chip8 {
                 _ => panic!(),
             }
 
-            timer_elapsed += start.elapsed().as_millis();
+            timer_elapsed += start.elapsed().as_micros();
 
-            // decrement delay and sound timers if it's been TIMER_TICK_MILLIS since our last decrement
-            if timer_elapsed > TIMER_TICK_MILLIS {
+            // decrement delay and sound timers if it's been TIMER_TICK_MICROS since our last decrement
+            if timer_elapsed > TIMER_TICK_MICROS {
                 timer_elapsed = 0;
                 self.dt = self.dt.saturating_sub(1);
                 self.st = self.st.saturating_sub(1);
