@@ -289,7 +289,7 @@ impl Chip8 {
                     // iterate over the sprite bytes, mapping each bit to the "pixel"
                     let end_byte = displx + 8;
                     for sprite_row in &self.memory[sprite_range] {
-                        if disply >= 32 { break; } // we're off the display, drawing is finished
+                        if disply >= 32 { break; } // we're off the display vertically, drawing is finished
                         let mut drawx = displx;
                         while drawx < end_byte && drawx < 64 {
                             let bitval = (sprite_row >> (end_byte - drawx - 1)) & 0x01;
@@ -1256,7 +1256,7 @@ mod tests {
             0xD2, 0x35, 
 
             0x61, 0x0F, 
-            0x62, 0x05, 
+            0x62, 0x0A, 
             0x63, 0x06, 
             0xF1, 0x29, 
             0xD2, 0x35, 
