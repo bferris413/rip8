@@ -1,5 +1,12 @@
+use std::io::{Result as IoResult, Write};
 use std::ops::Deref;
-use std::time::Instant;
+use std::time::{Instant, Duration};
+use std::thread;
+
+use crossterm::QueueableCommand;
+use crossterm::cursor::MoveTo;
+use crossterm::style::Print;
+use crossterm::terminal::{Clear, ClearType};
 
 // Number of bytes in the Chip8's memory.
 const MEM_BYTES: usize = 4096;
@@ -30,7 +37,7 @@ const FONT: [u8; 80] = [
 
 /// A Chip8 interpreter.
 #[derive(Debug)]
-pub struct Chip8 {
+pub struct Chip8<W: Write> {
     memory: [u8; MEM_BYTES],
     registers: [u8; 16],
     stack: [u16; 16],
@@ -39,11 +46,12 @@ pub struct Chip8 {
     dt: u8,
     st: u8,
     sp: u8,
-    display: [[u8; 64]; 32]
+    display: [[u8; 64]; 32],
+    draw_buf: W,
 }
-impl Chip8 {
+impl<W: Write> Chip8<W> {
     /// Returns a new Chip8 interpreter.
-    pub fn new() -> Self {
+    pub fn new(draw_buf: W) -> Self {
         let mut memory = [0; 4096];
         memory[0..FONT.len()].copy_from_slice(&FONT);
 
@@ -57,6 +65,7 @@ impl Chip8 {
             sp: 0,
             stack: [0; 16],
             display: [[0; 64]; 32],
+            draw_buf,
         }
     }
 
@@ -303,8 +312,9 @@ impl Chip8 {
                         disply += 1;
                     }
 
-                    // placeholder until a standalone display is implemented
-                    self.print_display();
+                    if let Err(e) = self.print_display() {
+                        eprintln!("error printing display: {e}");
+                    }
                 }
 
                 // Skip if keypressed, Ex9E
@@ -397,7 +407,7 @@ impl Chip8 {
                 &[0x00, 0x00] => {}
 
                 &[a, b] => unimplemented!("{a:#04X} {b:#04X}"),
-                _ => panic!(),
+                _ => unreachable!(),
             }
 
             timer_elapsed += start.elapsed().as_micros();
@@ -409,6 +419,19 @@ impl Chip8 {
                 self.st = self.st.saturating_sub(1);
             }
         }
+
+        // run out the remaining timers
+        while self.dt != 0 || self.st != 0 {
+            // after this first iteration, sleep_micros will always be
+            // TIMER_TICK_MICROS since timer_elapsed is never incremented
+            let sleep_micros = TIMER_TICK_MICROS.saturating_sub(timer_elapsed) as u64; 
+            let sleep_dur = Duration::from_micros(sleep_micros);
+            timer_elapsed = 0;
+
+            thread::sleep(sleep_dur);
+            self.dt = self.dt.saturating_sub(1);
+            self.st = self.st.saturating_sub(1);
+        } 
     }
 
     /// Loads the provided bytes into memory.
@@ -430,19 +453,21 @@ impl Chip8 {
     }
 
     /// Prints the Chip8's display.
-    pub fn print_display(&self) {
-        let mut s = String::new();
-        for arr in self.display {
-            for byte in arr {
-                if byte == 0x01 {
-                    s.push_str("\u{2587} ");
+    fn print_display(&mut self) -> IoResult<()> {
+        self.draw_buf.queue(Clear(ClearType::All))?;
+        const STR_LEN: usize = 2; // length of the printed character
+        for (i, row) in self.display.iter().enumerate() {
+            for (j, byte) in row.iter().enumerate() {
+                self.draw_buf.queue(MoveTo((j * STR_LEN) as u16 , i as u16))?;
+                if *byte == 0x01 {
+                    self.draw_buf.queue(Print("\u{2587} "))?;
                 } else {
-                    s.push_str("_ ");
+                    self.draw_buf.queue(Print("_ "))?;
                 }
             }
-            s.push('\n');
         }
-        println!("\n{s}");
+
+        self.draw_buf.flush()
     }
 }
 
@@ -501,6 +526,7 @@ impl<'a> AsRef<[u8]> for Instr<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     #[test]
     fn rom_with_code_creates_new_proper_rom() {
@@ -526,7 +552,7 @@ mod tests {
     #[test]
     fn chip8_load_loads_into_memory() {
         let rom = Rom::with_code(vec![255; MAX_ROM_BYTES]).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.load(&rom);
         assert_eq!(&chip8.memory[0x200..MEM_BYTES], &[255; MAX_ROM_BYTES]);
     }
@@ -534,7 +560,7 @@ mod tests {
     #[test]
     fn chip8_load_loads_smaller_rom_into_memory() {
         let rom = Rom::with_code(vec![255; 100]).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.load(&rom);
         assert_eq!(&chip8.memory[0x200..0x200+100], &[255; 100]);
         assert_eq!(&chip8.memory[0x200+100..], &[0; MAX_ROM_BYTES - 100]);
@@ -543,7 +569,7 @@ mod tests {
     #[test]
     fn chip8_fetch_fetches_next_instr() {
         let rom = Rom::with_code(Vec::from([1, 2, 3, 4, 5, 6])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.load(&rom);
         assert_eq!(&[1, 2], &*chip8.fetch().unwrap());
         assert_eq!(&[3, 4], &*chip8.fetch().unwrap());
@@ -555,7 +581,7 @@ mod tests {
     #[test]
     fn chip8_clears_display() {
         let rom = Rom::with_code(Vec::from([0x00, 0xE0])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.display.fill([255; 64]);
         chip8.run(rom);
         assert_eq!(chip8.display, [[0; 64]; 32]);
@@ -571,7 +597,7 @@ mod tests {
             0x00, 0x00,
             0x00, 0xA0, // 0x208, a halt + rewind
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         // the addr we set in jump
         assert_eq!(chip8.pc, 0x208);
@@ -583,7 +609,7 @@ mod tests {
             0x6A, 0xFF, // set VA to 0xFF
             0x00, 0xA0, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0A], 0xFF);
     }
@@ -595,7 +621,7 @@ mod tests {
             0x7A, 0x02, // add 0x02 to VA and store in VA
             0x00, 0xA1, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0A], 0x03);
     }
@@ -607,7 +633,7 @@ mod tests {
             0x7A, 0x02, // add 0x02 to VA and store in VA
             0x00, 0xA1, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0A], 0x01);
     }
@@ -618,7 +644,7 @@ mod tests {
             0xA1, 0x23, // set index register to 0x123
             0x00, 0xA1, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.index, 0x123);
     }
@@ -633,7 +659,7 @@ mod tests {
             0x00, 0xA1, // halt
             0xF0, 0x80, 0xF0, 0x10, 0xF0, // the sprite "5"
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         let exp_display = [
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -670,7 +696,7 @@ mod tests {
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
         ];
         assert_eq!(&chip8.display, &exp_display);
-        chip8.print_display();
+        chip8.print_display().unwrap();
     }
 
     #[test]
@@ -683,9 +709,9 @@ mod tests {
             0x00, 0xA1, // halt
             0xF0, 0x80, 0xF0, 0x10, 0xF0, // the sprite "5"
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
-        chip8.print_display();
+        chip8.print_display().unwrap();
         let exp_display = [
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -736,7 +762,7 @@ mod tests {
  /* x20E */ 0x00, 0xEE, // return 
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.pc, 0x20E); 
         assert_eq!(chip8.stack[chip8.sp as usize], 0x202);
@@ -759,7 +785,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0D], 0xAB);
         assert_eq!(chip8.registers[0x01], 0); // v1 should not have been set
@@ -773,7 +799,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x01], 0); // v1 should not have been set
     }
@@ -788,7 +814,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x01], 0); // v1 should not have been set
     }
@@ -801,7 +827,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x01], 0xFF);
         assert_eq!(chip8.registers[0x01], chip8.registers[0x0E]);
@@ -817,7 +843,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x02], 0xFF);
         assert_eq!(chip8.registers[0x0E], 0xF0); // VE should be unchanged
@@ -833,7 +859,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x09], 0x00);
         assert_eq!(chip8.registers[0x0a], 0xF0); // VA should be unchanged
@@ -849,7 +875,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x08], 0b1111_1111);
         assert_eq!(chip8.registers[0x02], 0b0101_0101); // V2 should be unchanged
@@ -865,7 +891,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x00], 0x01); // only lowest 8 bits should be present
         assert_eq!(chip8.registers[0x0F], 0x01);
@@ -885,7 +911,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x01], 0xAA);
         assert_eq!(chip8.registers[0x0F], 0x01);
@@ -907,7 +933,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0C], 0b0111_1111);
         assert_eq!(chip8.registers[0x0F], 0x01);
@@ -931,7 +957,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x01], 0x03);
         assert_eq!(chip8.registers[0x0F], 0x01);
@@ -953,7 +979,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0C], 0b1111_0100);
         assert_eq!(chip8.registers[0x0F], 0x01);
@@ -974,7 +1000,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x02], 0x00);
         assert_eq!(chip8.registers[0x00], 0xF1);
@@ -992,7 +1018,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x00], 0x11);
         assert_eq!(chip8.pc, 0x20A);
@@ -1008,7 +1034,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert!(chip8.registers[0x02] != 0x00);
         assert!(chip8.registers[0x02] != 0xFF);
@@ -1024,7 +1050,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x0A], 0xF1);
         assert_eq!(chip8.registers[0x0B], 0xF1);
@@ -1040,7 +1066,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x07], 0xAA);
         assert_eq!(chip8.st, 0xAA);
@@ -1057,7 +1083,7 @@ mod tests {
             0x00, 0xA1, // halt, I should be 0x04
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.registers[0x07], 0x02);
         assert_eq!(chip8.index, 0x02);
@@ -1076,7 +1102,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.memory[0xB00], 2);
         assert_eq!(chip8.memory[0xB01], 5);
@@ -1107,7 +1133,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(&chip8.memory[0x500..=0x50E], &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E]);
     }
@@ -1121,7 +1147,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         let slice = &[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E];
         chip8.memory[0x0A00..=0xA0E].copy_from_slice(slice);
         chip8.run(rom);
@@ -1137,7 +1163,7 @@ mod tests {
             0x00, 0xA1, // halt
         ])).unwrap();
 
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.index, 0x00);
 
@@ -1146,7 +1172,7 @@ mod tests {
             0xF9, 0x29, // set I wherever '8' is stored
             0x00, 0xA1, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.index, 0x28);
 
@@ -1155,7 +1181,7 @@ mod tests {
             0xFA, 0x29, // set I wherever 'F' is stored
             0x00, 0xA1, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
         assert_eq!(chip8.index, 0x4B);
     }
@@ -1263,7 +1289,7 @@ mod tests {
 
             0x00, 0xA1, // halt
         ])).unwrap();
-        let mut chip8 = Chip8::new();
+        let mut chip8 = Chip8::new(io::sink());
         chip8.run(rom);
     }
 }
