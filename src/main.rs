@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, Result as IoResult};
 use std::process;
-use chip8::chip8::{Chip8, Rom};
+use rip8::chip8::{Chip8, Rom};
 
 use crossterm::{
     event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags},
