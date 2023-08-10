@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::{self, Result as IoResult};
+use std::num::NonZeroU32;
 use std::process;
 use rip8::chip8::{Chip8, Rom};
 
@@ -10,7 +11,7 @@ use crossterm::{
 };
 
 fn main() {
-    let bytes = fs::read("roms/IBM Logo.ch8");
+    let bytes = fs::read("roms/1-chip8-logo.ch8");
     if let Err(e) = bytes {
         eprintln!("error reading Chip8 ROM: {e}");
         process::exit(1);
@@ -22,8 +23,10 @@ fn main() {
     }
 
     let rom = Rom::with_code(bytes.unwrap()).unwrap();
-    let mut chip8 = Chip8::new(io::stdout());
-    chip8.run(rom);
+    let mut chip8 = Chip8::new(io::stdout(), NonZeroU32::new(u32::MAX).unwrap());
+    if let Err(e) = chip8.run(rom) {
+        eprintln!("error running ROM: {e}");
+    }
 
     if let Err(e) = restore_terminal() {
         eprintln!("couldn't restore terminal: {e}");
