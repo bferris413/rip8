@@ -17,10 +17,18 @@ use crossterm::terminal::{Clear, ClearType};
 const MEM_BYTES: usize = 4096;
 // Maximum allowed bytes of a user's ROM.
 const MAX_ROM_BYTES: usize = MEM_BYTES - 0x200;
-// Delay and sound timer tick rate. Should tick ~60 times/sec
+// Delay and sound timer tick rate (~60 times/sec)
 const TIMER_TICK_RATE: Duration = Duration::from_micros(16700);
 // Microseconds per second
 const MICROS_PER_SEC: u32 = 60_000_000;
+
+// Map between Chip8 keyboard values (0x00-0x0F) and the QWERTY keyboard.
+// ----Chip8----       ---QWERTY----
+// 1 | 2 | 3 | C  -->  1 | 2 | 3 | 4
+// 4 | 5 | 6 | D  -->  Q | W | E | R
+// 7 | 8 | 9 | E  -->  A | S | D | F
+// A | 0 | B | F  -->  Z | X | C | V
+const KEYMAP: [char; 16] = ['x', '1', '2', '3', 'q', 'w', 'e', 'a', 's', 'd', 'z', 'c', '4', 'r', 'f', 'v' ];
 
 // Font, https://tobiasvl.github.io/blog/write-a-chip-8-emulator
 const FONT: [u8; 80] = [
@@ -57,7 +65,7 @@ pub struct Chip8<W: Write> {
     should_halt: bool,
     should_draw: bool,
     max_micros_per_cycle: Duration,
-    pressed_keys: HashSet<char>,
+    pressed_keys: HashSet<u8>,
     draw_buf: W,
 }
 impl<W: Write> Chip8<W> {
@@ -138,7 +146,7 @@ impl<W: Write> Chip8<W> {
                 let max_event_poll_dur = cmp::min(remaining_cycle_dur, remaining_timer_dur);
 
                 if event::poll(max_event_poll_dur)? {
-                    self.process_input_event()?;
+                    let _ = self.process_input_event()?;
                 }
 
                 timer_elapsed += cycle_wait_start.elapsed();
@@ -396,12 +404,20 @@ impl<W: Write> Chip8<W> {
 
             // Skip if keypressed, Ex9E
             &[a, 0x9E] if a & 0xF0 == 0xE0 => {
-                unimplemented!();
+                let regx = (a & 0x0F) as usize;
+                let val = self.registers[regx];
+                if self.pressed_keys.contains(&val) {
+                    self.pc += 2;
+                }
             }
 
             // Skip if not keypressed, ExA1
             &[a, 0xA1] if a & 0xF0 == 0xE0 => {
-                unimplemented!();
+                let regx = (a & 0x0F) as usize;
+                let val = self.registers[regx];
+                if !self.pressed_keys.contains(&val) {
+                    self.pc += 2;
+                }
             }
 
             // Vx = dt, Fx07
@@ -412,10 +428,21 @@ impl<W: Write> Chip8<W> {
 
             // Vx = keypress value, Fx0A
             // block until keypress
-            &[a, 0x07] if a & 0xF0 == 0xF0 => {
-                let _regx = (a & 0x0F) as usize;
-                // self.registers[regx] = unimplemented!();
-                unimplemented!();
+            &[a, 0x0A] if a & 0xF0 == 0xF0 => {
+                let regx = (a & 0x0F) as usize;
+                if event::poll(Duration::ZERO)? {
+                    match self.process_input_event()? {
+                        Some(Event::Key(KeyEvent { kind: KeyEventKind::Press | KeyEventKind::Release, code: KeyCode::Char(c), .. })) => {
+                            let value = KEYMAP.iter().position(|key| *key == c).unwrap() as u8; 
+                            self.registers[regx] = value;
+                        }
+                        _ => {
+                            // we're supposed to "block" from the user's perspective but the CPU needs to continue processing
+                            // timers and events so we'll loop on this instruction
+                            self.pc -= 2;
+                        }
+                    }
+                }
             }
 
             // dt = Vx, Fx15
@@ -489,9 +516,14 @@ impl<W: Write> Chip8<W> {
         Ok(())
     }
 
-    // 
-    fn process_input_event(&mut self) -> IoResult<()> {
-        match event::read()? {
+    // Reads and processes a single input event according to the event type.
+    //
+    // If the event isn't relevant to the emulator, it's ignored and Ok(None) is returned.
+    // If the event is relevant, it's processed and returned as Ok(Some(event)).
+    fn process_input_event(&mut self) -> IoResult<Option<Event>> {
+        let event = event::read()?;
+        let mut is_valid = false;
+        match event {
             Event::Key(KeyEvent { code: KeyCode::Char(c @ '1'), kind, .. }) |
             Event::Key(KeyEvent { code: KeyCode::Char(c @ '2'), kind, .. }) |
             Event::Key(KeyEvent { code: KeyCode::Char(c @ '3'), kind, .. }) |
@@ -508,10 +540,19 @@ impl<W: Write> Chip8<W> {
             Event::Key(KeyEvent { code: KeyCode::Char(c @ 'x'), kind, .. }) |
             Event::Key(KeyEvent { code: KeyCode::Char(c @ 'c'), kind, .. }) |
             Event::Key(KeyEvent { code: KeyCode::Char(c @ 'v'), kind, .. }) => {
+                is_valid = true;
+                // safe since valid key events are isolated in the match
+                let value = KEYMAP.iter().position(|key| *key == c).unwrap() as u8; 
                 match kind {
-                    KeyEventKind::Press => assert!(self.pressed_keys.insert(c)),
-                    KeyEventKind::Repeat => assert!(self.pressed_keys.contains(&c)),
-                    KeyEventKind::Release => assert!(self.pressed_keys.remove(&c)),
+                    KeyEventKind::Press => {
+                        assert!(self.pressed_keys.insert(value));
+                    }
+                    KeyEventKind::Repeat => {
+                        assert!(self.pressed_keys.contains(&value));
+                    }
+                    KeyEventKind::Release => {
+                        assert!(self.pressed_keys.remove(&value));
+                    }
                 };
             }
             Event::Key(KeyEvent { code: KeyCode::Char(' '), .. }) => {
@@ -525,7 +566,11 @@ impl<W: Write> Chip8<W> {
             _ => {},
         }
 
-        Ok(())
+        if is_valid {
+            Ok(Some(event))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Loads the provided bytes into memory.
