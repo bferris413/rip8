@@ -4,11 +4,11 @@ This repo contains a [Chip-8](https://en.wikipedia.org/wiki/CHIP-8) emulator and
 ## Components
 - Emulator (finished)
 - Disassembler (in-progress)
-- Assembler (planned)
+- High-level language and assembler (planned)
 - Plugin/editor (tentative)
 
 ## Build
-The emulator is cross-platform with a terminal-based display. You'll need a recent version of Rust (`> 1.50.0`) To run the emulator, clone the repo and execute the following:
+The emulator is cross-platform with a terminal-based display. You'll need a recent version of Rust (`> 1.50.0`). To run the emulator, clone the repo and execute the following:
 ```bash
 # /path/to/rip8
 cargo run --release -- --rom=roms/1-chip8-logo.ch8
@@ -45,6 +45,7 @@ ____________________________▇▇____▇▇____________▇▇__▇▇__________
 ____________________________▇▇______▇▇▇▇▇▇__▇▇▇▇______▇▇▇▇________▇▇▇▇______▇▇▇▇▇▇__▇▇____▇▇▇▇____▇▇▇▇▇▇________________________
 ________________________________________________________________________________________________________________________________
 ```
+(press `space` to shut it down)
 
 #### Supported Terminals
 - Windows: any
@@ -72,6 +73,8 @@ The Chip8 keyboard is mapped to the top-left corner of a QWERTY keyboard:
 // 7 | 8 | 9 | E  -->  A | S | D | F
 // A | 0 | B | F  -->  Z | X | C | V
 ```
+
+Pressing `space` shuts down the emulator.
 
 ## References
 - [Cowgod's Chip-8 Technical Reference v1.0](http://devernay.free.fr/hacks/chip8/C8TECH10.HTM#0.0)

@@ -1,19 +1,31 @@
 use std::fs;
 use std::io::{self, Result as IoResult};
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::process;
 use rip8::chip8::{Chip8, Rom};
 
+use clap::Parser;
 use crossterm::{
     event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 
+#[derive(Parser)]
+#[command(author, version, about, long_about = None)]
+/// A Chip-8 emulator
+struct Cli {
+    /// The ROM file to execute
+    #[arg(long, value_name = "BINARY")]
+    rom: PathBuf,
+}
+
 fn main() {
-    let bytes = fs::read("roms/1-chip8-logo.ch8");
+    let args = Cli::parse();
+    let bytes = fs::read(args.rom);
     if let Err(e) = bytes {
-        eprintln!("error reading Chip8 ROM: {e}");
+        eprintln!("error reading Chip-8 ROM: {e}");
         process::exit(1);
     }
 

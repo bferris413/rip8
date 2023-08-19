@@ -593,7 +593,7 @@ impl<W: Write> Chip8<W> {
         }
     }
 
-    /// Prints the Chip8's display.
+    /// Prints the Chip-8's display.
     fn draw_display(&mut self) -> IoResult<()> {
         self.draw_buf.queue(Clear(ClearType::All))?;
         const STR_LEN: usize = 2; // length of the printed character
@@ -608,6 +608,9 @@ impl<W: Write> Chip8<W> {
             }
         }
 
+        let last_row_idx = self.display.len();
+        self.draw_buf.queue(MoveTo(0, last_row_idx as u16))?;
+        self.draw_buf.queue(Print("(press space to immediately shut down)"))?;
         self.draw_buf.flush()
     }
 }
